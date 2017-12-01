@@ -2,7 +2,7 @@ import os
 import secrets
 
 from flask import Flask
-from auth0_ext import Auth0
+from flask_auth0 import Auth0
 
 from redis import Redis
 from flask_session import RedisSessionInterface

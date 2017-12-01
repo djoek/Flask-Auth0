@@ -5,7 +5,7 @@ from flask import Blueprint, session, url_for, redirect, request, abort, current
 from itsdangerous import BadSignature
 from jose import jwt
 
-from auth0_ext.user import User
+from flask_auth0.user import User
 
 auth0 = Blueprint('auth0', __name__, template_folder='./templates')
 

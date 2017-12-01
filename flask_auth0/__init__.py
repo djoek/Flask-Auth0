@@ -1,1 +1,1 @@
-from .auth0_ext import AuthorizationCodeFlow
+from .auth0_ext import Auth0
