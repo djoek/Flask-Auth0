@@ -1,0 +1,6 @@
+requests
+flask
+werkzeug
+itsdangerous
+pycryptodome
+python-jose[pycryptodome]
