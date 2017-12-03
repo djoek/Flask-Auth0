@@ -17,7 +17,7 @@ def logout():
     This clears the server-side session entry and redirects to the logout endpoint
     :return: redirect()
     """
-    del session['auth0_user']
+    del session[current_app.config['AUTH0_SESSION_KEY']]
     params = {
         'returnTo': url_for('index', _external=True),
         'client_id': current_app.config['AUTH0_CLIENT_ID']
@@ -85,7 +85,7 @@ def oauth2_callback():
                              audience=current_app.config['AUTH0_CLIENT_ID'],
                              issuer=current_app.auth0_oidc.issuer)
 
-        session['auth0_user'] = User(**payload)
+        session[current_app.config['AUTH0_SESSION_KEY']] = User(**payload)
         return redirect(state.get('return_to', '/'))
 
     return abort(401)

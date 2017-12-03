@@ -8,11 +8,11 @@ from redis import Redis
 from flask_session import RedisSessionInterface
 
 app = Flask(__name__)
-app.secret_key = secrets.token_bytes(64)
+app.secret_key = os.getenv('SECRET_KEY') or secrets.token_bytes(64)
 app.permanent_session_lifetime = 86400
 
 app.session_interface = RedisSessionInterface(
-    redis=Redis('redis'),
+    redis=Redis('redis://redis/0'),
     key_prefix="%s:" % app.name,
     use_signer=True,
 )
@@ -21,6 +21,8 @@ auth = Auth0(
     base_url=os.getenv('AUTH0_BASE_URL'),
     client_id=os.getenv('CLIENT_ID'),
     client_secret=os.getenv('CLIENT_SECRET'),
+    # url_prefix="/auth0",
+    # session_key="auth0_user",
 )
 auth.init_app(app)
 
