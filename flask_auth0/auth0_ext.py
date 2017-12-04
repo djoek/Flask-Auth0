@@ -39,8 +39,10 @@ class Auth0(object):
             @wraps(f)
             def decorated_function(*args, **kwargs):
                 user_instance = self.current_user
-                if user_instance and all(getattr(user_instance, key, None) == value
-                                         for key, value in match_fields.items()):
+                if user_instance \
+                        and user_instance.is_authenticated \
+                        and all(getattr(user_instance, key, None) == value
+                                for key, value in match_fields.items()):
                     return f(*args, **kwargs)
                 return abort(401)
 

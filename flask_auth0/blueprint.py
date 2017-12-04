@@ -77,11 +77,20 @@ def oauth2_callback():
             },
         ).json()
 
+        id_token = token_data['id_token']
+
         # Obtain JWT and the keys to validate the signature
         keys = requests.get(current_app.auth0_oidc.jwks_uri).json()
-        payload = jwt.decode(token=token_data['id_token'],
+
+        # We can get the info in the id_token, but it needs to be verified
+        u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
+
+        # Get the key which was used to sign this id_token
+        kid, alg = u_header['kid'], u_header['alg']
+
+        payload = jwt.decode(token=id_token,
                              key=keys,
-                             algorithms=['RS256'],
+                             algorithms=[alg],
                              audience=current_app.config['AUTH0_CLIENT_ID'],
                              issuer=current_app.auth0_oidc.issuer)
 

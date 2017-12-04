@@ -19,6 +19,10 @@ class User:
         return self.payload.get('nickname')
 
     @property
+    def username(self):
+        return self.payload.get('sub')
+
+    @property
     def role(self):
         return self.payload.get('role')
 
