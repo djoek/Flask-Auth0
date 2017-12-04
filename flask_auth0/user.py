@@ -12,7 +12,7 @@ class User:
 
     @property
     def is_admin(self):
-        return self.payload.get('is_admin', False)
+        return self.payload.get('role', None) == 'admin'
 
     @property
     def nickname(self):
@@ -27,7 +27,7 @@ class User:
         return self.payload.get('role')
 
     def __str__(self):
-        return self.payload['nickname']
+        return self.nickname
 
     def __repr__(self):
-        return f"<User {self.payload.get('sub')}>"
+        return f"<User {self.nickname} {'Authenticated' if self.is_authenticated else 'Expired'}>"
