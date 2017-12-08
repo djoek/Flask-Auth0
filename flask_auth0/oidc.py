@@ -1,16 +1,22 @@
 from requests import get
 from urllib.parse import urljoin
+from functools import lru_cache
 
 
 class OpenIDConfig:
 
     def __init__(self, base_url):
+        self.base_url = base_url
+
+    @property
+    @lru_cache()
+    def openid_config(self):
         openid_result = get(
-            urljoin(base_url, '.well-known/openid-configuration')
+            urljoin(self.base_url, '.well-known/openid-configuration')
         )
         openid_result.raise_for_status()
 
-        self.openid_config = openid_result.json()
+        return openid_result.json()
 
     @property
     def token_url(self):

@@ -12,7 +12,7 @@ app.secret_key = os.getenv('SECRET_KEY') or secrets.token_bytes(64)
 app.permanent_session_lifetime = 86400
 
 app.session_interface = RedisSessionInterface(
-    redis=Redis('redis://redis/0'),
+    redis=Redis.from_url('redis://redis/0'),
     key_prefix="%s:" % app.name,
     use_signer=True,
 )
