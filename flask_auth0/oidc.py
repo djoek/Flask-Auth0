@@ -31,6 +31,10 @@ class OpenIDConfig:
         return self.openid_config['authorization_endpoint']
 
     @property
+    def introspection_url(self):
+        return self.openid_config['introspection_endpoint']
+
+    @property
     def jwks_uri(self):
         return self.openid_config['jwks_uri']
 
