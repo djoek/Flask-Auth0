@@ -25,7 +25,7 @@ class AuthorizationCodeFlow(object):
                  client_id=None, client_secret=None,
                  cache=None,
                  scope='openid',
-                 url_prefix='/oauth2', session_key='auth0'):
+                 url_prefix='/oauth2', uid_key='auth0'):
 
         self.app = app
 
@@ -34,7 +34,7 @@ class AuthorizationCodeFlow(object):
         self.client_secret = client_secret
         self.scope = scope
         self.url_prefix = url_prefix
-        self.session_key = session_key
+        self.session_uid_key = uid_key
 
         # Setup backend cache
         if cache is None:
@@ -55,7 +55,7 @@ class AuthorizationCodeFlow(object):
         self.client_id = app.config.setdefault('AUTH0_CLIENT_ID', self.client_id)
         self.client_secret = app.config.setdefault('AUTH0_CLIENT_SECRET', self.client_secret)
         self.base_url = app.config.setdefault('AUTH0_BASE_URL', self.base_url)
-        self.session_key = app.config.setdefault('AUTH0_SESSION_KEY', self.session_key)
+        self.session_uid_key = app.config.setdefault('AUTH0_SESSION_KEY', self.session_uid_key)
 
         self.url_prefix = app.config.setdefault('AUTH0_URL_PREFIX', self.url_prefix)
         self.scope = app.config.setdefault('AUTH0_SCOPE', self.scope)
@@ -88,42 +88,52 @@ class AuthorizationCodeFlow(object):
         return decorator
 
     @property
-    def key_prefix(self):
-        return session.get(self.session_key)
+    def token_data(self):
+        return self.cache.get(session.get(self.session_uid_key))
 
     @property
     def is_authenticated(self):
-        return self.cache.has('%s:access_token' % self.key_prefix)
+        pf = session.get(self.session_uid_key)
+        if pf is not None:
+            return self.cache.has(pf)
+        return False
 
     @property
     def access_token(self):
-        return self.cache.get('%s:access_token' % self.key_prefix)
+        token_data = self.token_data
+        return token_data.get('access_token') if self.token_data else None
 
     @property
     def refresh_token(self):
-        return self.cache.get('%s:refresh_token' % self.key_prefix)
+        token_data = self.token_data
+        return token_data.get('refresh_token') if self.token_data else None
 
     @property
     def id_token(self):
-        return self.cache.get('%s:id_token' % self.key_prefix)
+        token_data = self.token_data
+        return token_data.get('id_token') if self.token_data else None
 
     @property
     def token_type(self):
-        return self.cache.get('%s:token_type' % self.key_prefix)
+        token_data = self.token_data
+        return token_data.get('token_type') if self.token_data else None
+
+    @property
+    def claims(self):
+        token_data = self.token_data
+        return token_data.get('claims') if self.token_data else None
 
     @property
     def sub(self):
-        claims = self.cache.get('%s:id_token_claims' % self.key_prefix)
-        return claims.get('sub')
+        return self.claims.get('sub') if self.claims else None
 
     @property
     def authorization_header(self):
         return '%s %s' % (self.token_type, self.access_token)
 
-    def get_verified_claims(self):
-
+    def get_verified_claims(self, id_token):
         # We can get the info in the id_token, but it needs to be verified
-        u_header, u_claims = jwt.get_unverified_header(self.id_token), jwt.get_unverified_claims(self.id_token)
+        u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
         # Get the key which was used to sign this id_token
         kid, alg = u_header['kid'], u_header['alg']
 
@@ -132,7 +142,7 @@ class AuthorizationCodeFlow(object):
         for key in jwks_response['keys']:
             if key['kid'] == kid:
                 payload = jwt.decode(
-                    token=self.id_token, key=key,
+                    token=id_token, key=key,
                     audience=self.client_id,
                     issuer=self.openid_config.issuer)
                 return payload
@@ -227,8 +237,7 @@ class AuthorizationCodeFlow(object):
                     'redirect_uri': url_for('flask-auth0.callback', _external=True)
                 }).json()
 
-            key_prefix = hexlify(generate_token(64)).decode('ascii')
-            session[self.session_key] = key_prefix
+            session[self.session_uid_key] = hexlify(generate_token(64)).decode('ascii')
 
             try:
                 exp = token_data['expires_in']
@@ -238,14 +247,9 @@ class AuthorizationCodeFlow(object):
                 return abort(Response(error, status=400))
             else:
                 # TODO: encrypt these values
-                self.cache.set('%s:access_token' % key_prefix, token_data.get('access_token'), timeout=exp)
-                self.cache.set('%s:refresh_token' % key_prefix, token_data.get('refresh_token'), timeout=exp)
-                self.cache.set('%s:id_token' % key_prefix, token_data.get('id_token'), timeout=exp)
-                self.cache.set('%s:token_type' % key_prefix, token_data.get('token_type'), timeout=exp)
-
-                id_token_claims = self.get_verified_claims()
-                self.cache.set('%s:id_token_claims' % key_prefix, id_token_claims,
-                               timeout=id_token_claims.get('exp', exp))
+                token_data['claims'] = self.get_verified_claims(token_data['id_token'])
+                # Store the token data in the server-side cache under the id stored in the session
+                self.cache.set(session[self.session_uid_key], token_data, timeout=exp)
 
                 return redirect(state.get('return_to', '/'))
 
