@@ -131,7 +131,7 @@ class AuthorizationCodeFlow(object):
     def authorization_header(self):
         return '%s %s' % (self.token_type, self.access_token)
 
-    def get_verified_claims(self, id_token):
+    def verify_claims(self, id_token):
         # We can get the info in the id_token, but it needs to be verified
         u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
         # Get the key which was used to sign this id_token
@@ -247,7 +247,7 @@ class AuthorizationCodeFlow(object):
                 return abort(Response(error, status=400))
             else:
                 # TODO: encrypt these values
-                token_data['claims'] = self.get_verified_claims(token_data['id_token'])
+                token_data['claims'] = self.verify_claims(token_data['id_token'])
                 # Store the token data in the server-side cache under the id stored in the session
                 self.cache.set(session[self.session_uid_key], token_data, timeout=exp)
 
