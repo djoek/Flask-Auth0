@@ -107,7 +107,9 @@ class AuthorizationCodeFlow(object):
 
     @property
     def token_data(self):
-        return self.cache.get(session.get(self.session_uid_key))
+        if self.session_uid_key is not None:
+            return self.cache.get(session.get(self.session_uid_key))
+        return {}
 
     @property
     def is_authenticated(self):
@@ -215,7 +217,7 @@ class AuthorizationCodeFlow(object):
         # Redirect to auth0 logout
         params = {
             'returnTo': url_for('index', _external=True),
-            'client_id': self.client_secret
+            'client_id': self.client_id
         }
         return redirect(self.openid_config.issuer + 'v2/logout?' + urlencode(params))
 
