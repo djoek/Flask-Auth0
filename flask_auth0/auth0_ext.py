@@ -11,10 +11,17 @@ import requests
 from jose import jwt
 
 from itsdangerous import URLSafeSerializer, BadSignature
-from flask import session, abort, redirect, url_for, request, Blueprint, Response
+from flask import session, abort, redirect, url_for, request, Blueprint, Response, jsonify
 from werkzeug.contrib.cache import SimpleCache, BaseCache
 
 from flask_auth0.oidc import OpenIDConfig
+
+
+# Error handler
+class AuthError(Exception):
+    def __init__(self, error, status_code):
+        self.error = error
+        self.status_code = status_code
 
 
 class AuthorizationCodeFlow(object):
@@ -57,6 +64,9 @@ class AuthorizationCodeFlow(object):
         self.base_url = app.config.setdefault('AUTH0_BASE_URL', self.base_url)
         self.session_uid_key = app.config.setdefault('AUTH0_SESSION_KEY', self.session_uid_key)
 
+        if any(v is None for v in (self.client_id, self.client_secret, self.base_url)):
+            raise ValueError("Missing Config Variables")
+
         self.url_prefix = app.config.setdefault('AUTH0_URL_PREFIX', self.url_prefix)
         self.scope = app.config.setdefault('AUTH0_SCOPE', self.scope)
 
@@ -71,7 +81,15 @@ class AuthorizationCodeFlow(object):
         blueprint.add_url_rule('/logout', 'logout', self.logout)
         blueprint.add_url_rule('/callback', 'callback', self.callback)
 
+        blueprint.errorhandler(AuthError)(self.handle_auth_error)
+
         app.register_blueprint(blueprint=blueprint, url_prefix=self.url_prefix)
+
+    @staticmethod
+    def handle_auth_error(ex):
+        response = jsonify(ex.error)
+        response.status_code = ex.status_code
+        return response
 
     def login_required(self, redirect_to_url_for=None):
 
@@ -141,13 +159,27 @@ class AuthorizationCodeFlow(object):
         jwks_response = requests.get(self.openid_config.jwks_uri).json()
         for key in jwks_response['keys']:
             if key['kid'] == kid:
-                payload = jwt.decode(
-                    token=id_token, key=key,
-                    audience=self.client_id,
-                    issuer=self.openid_config.issuer)
-                return payload
+                try:
+                    payload = jwt.decode(
+                        token=id_token, key=key,
+                        audience=self.client_id,
+                        issuer=self.openid_config.issuer)
+                except jwt.ExpiredSignatureError:
+                    raise AuthError({"code": "token_expired",
+                                     "description": "token is expired"}, 401)
+                except jwt.JWTClaimsError:
+                    raise AuthError({"code": "invalid_claims",
+                                     "description":
+                                         "incorrect claims,"
+                                         "please check the audience and issuer"}, 401)
+                except Exception:
+                    raise AuthError({"code": "invalid_header",
+                                     "description": "Unable to parse authentication token."}, 401)
+                else:
+                    return payload
 
-        return {}
+        raise AuthError({"code": "invalid_header",
+                         "description": "Unable to find appropriate key"}, 401)
 
     def get_user_info(self):
 
@@ -254,3 +286,4 @@ class AuthorizationCodeFlow(object):
                 return redirect(state.get('return_to', '/'))
 
         return abort(401)
+
