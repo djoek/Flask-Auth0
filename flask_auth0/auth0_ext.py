@@ -134,8 +134,8 @@ class AuthorizationCodeFlow(object):
 
     @property
     def claims(self):
-        token_data = self.token_data
-        return token_data.get('claims') if self.token_data else None
+        key = session.get(self.session_uid_key, "Unknown")
+        return self.cache.get(f"{key}:claims")
 
     @property
     def sub(self):
