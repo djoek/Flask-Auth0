@@ -239,9 +239,11 @@ class AuthorizationCodeFlow(object):
     def refresh(self):
         token_result = requests.post(
             url=self.openid_config.token_url,
-            data={
+            headers={
+                'Content-Type': 'application/json'
+            },
+            json={
                 'grant_type': 'refresh_token',
-                'scope': self.scope,
                 'client_id': self.client_id,
                 'client_secret': self.client_secret,
                 'refresh_token': self.refresh_token
