@@ -107,7 +107,7 @@ class AuthorizationCodeFlow(object):
 
     @property
     def token_data(self):
-        if self.session_uid_key is not None:
+        if self.session_uid_key:
             return self.cache.get(session.get(self.session_uid_key))
         return {}
 
