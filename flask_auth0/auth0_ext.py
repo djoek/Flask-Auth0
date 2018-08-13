@@ -204,13 +204,9 @@ class AuthorizationCodeFlow(object):
         :return: redirect()
         """
         # Clear the cached tokens server-side
-        key_prefix = self.key_prefix
-        self.cache.delete_many(
-            '%s:token_type' % key_prefix,
-            '%s:access_token' % key_prefix,
-            '%s:refresh_token' % key_prefix,
-            '%s:id_token' % key_prefix,
-            '%s:id_token_claims' % key_prefix,
+        key_prefix = self.session_uid_key
+        self.cache.delete(
+            session[self.session_uid_key]
         )
         
         # Clear the session
