@@ -107,9 +107,9 @@ class AuthorizationCodeFlow(object):
 
     @property
     def is_authenticated(self):
-        pf = session.get(self.session_uid_key)
-        if pf is not None:
-            return self.cache.has(pf)
+        key = session.get(self.session_uid_key, "Unknown")
+        if key is not None:
+            return self.cache.has(f"{key}:access_token")
         return False
 
     @property
@@ -300,7 +300,7 @@ class AuthorizationCodeFlow(object):
 
         self.cache.set(f"{session[self.session_uid_key]}:access_token", access_token, timeout=expires_in)
         self.cache.set(f"{session[self.session_uid_key]}:token_type", token_type, timeout=expires_in)
-        self.cache.set(f"{session[self.session_uid_key]}:refresh_token", refresh_token, timeout=expires_in)
+        self.cache.set(f"{session[self.session_uid_key]}:refresh_token", refresh_token, timeout=7*24*60*60)
         self.cache.set(f"{session[self.session_uid_key]}:id_token", id_token, timeout=expires_in)
 
         claims = self.verify_claims(id_token)
