@@ -251,7 +251,7 @@ class AuthorizationCodeFlow(object):
         )
         # token_result.raise_for_status()
         token_data = token_result.json()
-        current_app.logger.debug(token_data)
+        current_app.logger.warn(token_data)
         self._update_tokens(**token_data)
 
     def callback(self):
@@ -298,9 +298,10 @@ class AuthorizationCodeFlow(object):
                        access_token, token_type="Bearer",
                        refresh_token=None,
                        id_token=None,
-                       expires_in=86400):
-        current_app.logger.debug(
+                       expires_in=86400, **kwargs):
+        current_app.logger.warn(
             f"AT {access_token}, TT {token_type}, RT {refresh_token}, IT {id_token}, EX {expires_in}")
+        current_app.logger.warn(kwargs)
 
         self.cache.set(f"{session[self.session_uid_key]}:access_token", access_token, timeout=expires_in)
         self.cache.set(f"{session[self.session_uid_key]}:token_type", token_type, timeout=expires_in)
