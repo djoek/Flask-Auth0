@@ -11,7 +11,7 @@ import requests
 from jose import jwt
 
 from itsdangerous import URLSafeSerializer, BadSignature
-from flask import session, abort, redirect, url_for, request, Blueprint, Response, jsonify
+from flask import session, abort, redirect, url_for, request, Blueprint, Response, jsonify, current_app
 from werkzeug.contrib.cache import SimpleCache, BaseCache
 
 from flask_auth0.oidc import OpenIDConfig
@@ -249,9 +249,9 @@ class AuthorizationCodeFlow(object):
                 'refresh_token': self.refresh_token
             }
         )
-        token_result.raise_for_status()
+        # token_result.raise_for_status()
         token_data = token_result.json()
-
+        current_app.logger.debug(token_data)
         self._update_tokens(**token_data)
 
     def callback(self):
@@ -299,6 +299,8 @@ class AuthorizationCodeFlow(object):
                        refresh_token=None,
                        id_token=None,
                        expires_in=86400):
+        current_app.logger.debug(
+            f"AT {access_token}, TT {token_type}, RT {refresh_token}, IT {id_token}, EX {expires_in}")
 
         self.cache.set(f"{session[self.session_uid_key]}:access_token", access_token, timeout=expires_in)
         self.cache.set(f"{session[self.session_uid_key]}:token_type", token_type, timeout=expires_in)
@@ -307,4 +309,3 @@ class AuthorizationCodeFlow(object):
 
         claims = self.verify_claims(id_token)
         self.cache.set(f"{session[self.session_uid_key]}:claims", claims, timeout=claims.get('exp', expires_in))
-
