@@ -91,16 +91,14 @@ class AuthorizationCodeFlow(object):
         response.status_code = ex.status_code
         return response
 
-    def login_required(self, redirect_to_url_for=None):
+    def login_required(self):
 
         def decorator(f):
             @wraps(f)
             def decorated_function(*args, **kwargs):
-                unauthorized = abort(401) if redirect_to_url_for is None else redirect(url_for(redirect_to_url_for))
-
                 if self.is_authenticated:
                     return f(*args, **kwargs)
-                return unauthorized
+                return abort(401)
 
             return decorated_function
         return decorator
@@ -263,7 +261,7 @@ class AuthorizationCodeFlow(object):
                 state = self.signer.loads(request.args.get('state'))
             except BadSignature:  # State has been tampered with
                 self.app.logger.info(request.args.get('state'))
-                return abort(400)
+                return abort(401)
 
             token_result = requests.post(
                 self.openid_config.token_url,
