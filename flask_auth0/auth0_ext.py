@@ -11,7 +11,7 @@ import requests
 from jose import jwt
 
 from itsdangerous import URLSafeSerializer, BadSignature
-from flask import session, abort, redirect, url_for, request, Blueprint, Response, jsonify, current_app
+from flask import session, abort, redirect, url_for, request, Blueprint, jsonify
 from werkzeug.contrib.cache import SimpleCache, BaseCache
 
 from flask_auth0.oidc import OpenIDConfig
@@ -106,36 +106,32 @@ class AuthorizationCodeFlow(object):
         return decorator
 
     @property
+    def token_data(self):
+        return self.cache.get(session.get(self.session_uid_key)) or {}
+
+    @property
     def is_authenticated(self):
-        key = session.get(self.session_uid_key, "Unknown")
-        if key is not None:
-            return self.cache.has(f"{key}:access_token")
-        return False
+        return self.cache.has(session.get(self.session_uid_key))
 
     @property
     def access_token(self):
-        key = session.get(self.session_uid_key, "Unknown")
-        return self.cache.get(f"{key}:access_token")
+        return self.token_data.get('access_token')
 
     @property
     def refresh_token(self):
-        key = session.get(self.session_uid_key, "Unknown")
-        return self.cache.get(f"{key}:refresh_token")
+        return self.token_data.get('refresh_token')
 
     @property
     def id_token(self):
-        key = session.get(self.session_uid_key, "Unknown")
-        return self.cache.get(f"{key}:id_token")
+        return self.token_data.get('id_token')
 
     @property
     def token_type(self):
-        key = session.get(self.session_uid_key, "Unknown")
-        return self.cache.get(f"{key}:token_type")
+        return self.token_data.get('token_type')
 
     @property
     def claims(self):
-        key = session.get(self.session_uid_key, "Unknown")
-        return self.cache.get(f"{key}:claims")
+        return self.token_data.get('claims')
 
     @property
     def sub(self):
@@ -178,7 +174,6 @@ class AuthorizationCodeFlow(object):
                          "description": "Unable to find appropriate key"}, 401)
 
     def get_user_info(self):
-
         try:
             result = requests.get(
                 self.openid_config.userinfo_url,
@@ -244,14 +239,14 @@ class AuthorizationCodeFlow(object):
             },
             json={
                 'grant_type': 'refresh_token',
+                'scope': self.scope,
                 'client_id': self.client_id,
                 'client_secret': self.client_secret,
                 'refresh_token': self.refresh_token
             }
         )
-        # token_result.raise_for_status()
+        token_result.raise_for_status()
         token_data = token_result.json()
-        current_app.logger.warn(token_data)
         self._update_tokens(**token_data)
 
     def callback(self):
@@ -283,8 +278,9 @@ class AuthorizationCodeFlow(object):
             token_result.raise_for_status()
             token_data = token_result.json()
 
-            session_uid_key = session.setdefault(
-                self.session_uid_key, hexlify(generate_token(64)).decode('ascii'))
+            session.setdefault(
+                self.session_uid_key,
+                hexlify(generate_token(64)).decode('ascii'))
 
             if 'error' in token_data:
                 raise AuthError
@@ -299,14 +295,14 @@ class AuthorizationCodeFlow(object):
                        refresh_token=None,
                        id_token=None,
                        expires_in=86400, **kwargs):
-        current_app.logger.warn(
-            f"AT {access_token}, TT {token_type}, RT {refresh_token}, IT {id_token}, EX {expires_in}")
-        current_app.logger.warn(kwargs)
-
-        self.cache.set(f"{session[self.session_uid_key]}:access_token", access_token, timeout=expires_in)
-        self.cache.set(f"{session[self.session_uid_key]}:token_type", token_type, timeout=expires_in)
-        self.cache.set(f"{session[self.session_uid_key]}:refresh_token", refresh_token, timeout=7*24*60*60)
-        self.cache.set(f"{session[self.session_uid_key]}:id_token", id_token, timeout=expires_in)
 
         claims = self.verify_claims(id_token)
-        self.cache.set(f"{session[self.session_uid_key]}:claims", claims, timeout=claims.get('exp', expires_in))
+
+        self.cache.set(
+            session[self.session_uid_key], {
+                'access_token': access_token,
+                'token_type': token_type,
+                'refresh_token': refresh_token,
+                'id_token': id_token,
+                'claims': claims,
+            }, timeout=expires_in)
