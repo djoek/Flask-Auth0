@@ -111,7 +111,7 @@ class AuthorizationCodeFlow(object):
 
     @property
     def is_authenticated(self):
-        return self.cache.has(session.get(self.session_uid_key))
+        return self.cache.has(session.get(self.session_uid_key, default=""))
 
     @property
     def access_token(self):
