@@ -41,3 +41,4 @@ class OpenIDConfig:
     @property
     def issuer(self):
         return self.openid_config['issuer']
+
