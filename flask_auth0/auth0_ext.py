@@ -91,17 +91,13 @@ class AuthorizationCodeFlow(object):
         response.status_code = ex.status_code
         return response
 
-    def login_required(self):
-
-        def decorator(f):
-            @wraps(f)
-            def decorated_function(*args, **kwargs):
-                if self.is_authenticated:
-                    return f(*args, **kwargs)
-                return abort(401)
-
-            return decorated_function
-        return decorator
+    def login_required(self, f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if self.is_authenticated:
+                return f(*args, **kwargs)
+            return abort(401)
+        return decorated_function
 
     @property
     def token_data(self):
