@@ -1,4 +1,4 @@
-from functools import wraps, lru_cache
+from functools import wraps
 from urllib.parse import urlencode
 from binascii import hexlify
 
@@ -11,10 +11,25 @@ import requests
 from jose import jwt
 
 from itsdangerous import URLSafeSerializer, BadSignature
-from flask import session, abort, redirect, url_for, request, Blueprint, jsonify
+from flask import session, abort, redirect, url_for, request, Blueprint, jsonify, g
 from werkzeug.contrib.cache import SimpleCache, BaseCache
 
 from flask_auth0.oidc import OpenIDConfig
+
+
+class TokenDataDescriptor:
+    __slots__ = ['token_name']
+
+    def __init__(self, token_name=None):
+        self.token_name = token_name
+
+    def __get__(self, obj, _type=None):
+        if _type is not None:
+            return g.token_data.get(self.token_name)
+
+    def __set_name__(self, owner, name):
+        if self.token_name is None:
+            self.token_name = name
 
 
 # Error handler
@@ -41,7 +56,7 @@ class AuthorizationCodeFlow(object):
         self.client_secret = client_secret
         self.scope = scope
         self.url_prefix = url_prefix
-        self.session_uid_key = uid_key
+        self.uid_key_in_session = uid_key
 
         # Setup backend cache
         if cache is None:
@@ -62,7 +77,7 @@ class AuthorizationCodeFlow(object):
         self.client_id = app.config.setdefault('AUTH0_CLIENT_ID', self.client_id)
         self.client_secret = app.config.setdefault('AUTH0_CLIENT_SECRET', self.client_secret)
         self.base_url = app.config.setdefault('AUTH0_BASE_URL', self.base_url)
-        self.session_uid_key = app.config.setdefault('AUTH0_SESSION_KEY', self.session_uid_key)
+        self.uid_key_in_session = app.config.setdefault('AUTH0_SESSION_KEY', self.uid_key_in_session)
 
         if any(v is None for v in (self.client_id, self.client_secret, self.base_url)):
             raise ValueError("Missing Config Variables")
@@ -82,6 +97,7 @@ class AuthorizationCodeFlow(object):
         blueprint.add_url_rule('/callback', 'callback', self.callback)
 
         blueprint.errorhandler(AuthError)(self.handle_auth_error)
+        blueprint.before_app_request(self.get_user_auth_data)
 
         app.register_blueprint(blueprint=blueprint, url_prefix=self.url_prefix)
 
@@ -99,33 +115,26 @@ class AuthorizationCodeFlow(object):
             return abort(401)
         return decorated_function
 
-    @property
-    def token_data(self):
-        return self.cache.get(session.get(self.session_uid_key)) or {}
+    def admin_required(self, f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if self.is_authenticated and self.claims.get('role') == 'admin':
+                return f(*args, **kwargs)
+            return abort(401)
+        return decorated_function
+
+    def get_user_auth_data(self):
+        g.uid = session.get(self.uid_key_in_session)
+        g.token_data = self.cache.get(f"{g.uid}:token_data") or {}
 
     @property
     def is_authenticated(self):
-        return self.cache.has(session.get(self.session_uid_key,) or "")
+        return g.uid is not None and self.cache.has(f"{g.uid}:token_data")
 
-    @property
-    def access_token(self):
-        return self.token_data.get('access_token')
-
-    @property
-    def refresh_token(self):
-        return self.token_data.get('refresh_token')
-
-    @property
-    def id_token(self):
-        return self.token_data.get('id_token')
-
-    @property
-    def token_type(self):
-        return self.token_data.get('token_type')
-
-    @property
-    def claims(self):
-        return self.token_data.get('claims')
+    token_type = TokenDataDescriptor()
+    access_token = TokenDataDescriptor()
+    refresh_token = TokenDataDescriptor()
+    claims = TokenDataDescriptor()
 
     @property
     def sub(self):
@@ -133,9 +142,10 @@ class AuthorizationCodeFlow(object):
 
     @property
     def authorization_header(self):
-        return '%s %s' % (self.token_type, self.access_token)
+        return f"{self.token_type} {self.access_token}"
 
     def verify_claims(self, id_token):
+
         # We can get the info in the id_token, but it needs to be verified
         u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
         # Get the key which was used to sign this id_token
@@ -189,11 +199,7 @@ class AuthorizationCodeFlow(object):
         :return: redirect()
         """
         # Clear the cached tokens server-side
-        self.cache.delete_many(
-            *(f"{session[self.session_uid_key]}:{token}" for token in [
-                'access_token', 'token_type', 'refresh_token', 'id_token'
-            ])
-        )
+        self.cache.delete(f"{g.uid}:token_data")
         
         # Clear the session
         session.clear()
@@ -240,6 +246,7 @@ class AuthorizationCodeFlow(object):
             }
         )
         token_result.raise_for_status()
+
         token_data = token_result.json()
         self._update_tokens(**token_data)
 
@@ -268,15 +275,14 @@ class AuthorizationCodeFlow(object):
                     'client_secret': self.client_secret,
                     'redirect_uri': url_for('flask-auth0.callback', _external=True)
                 })
-
             token_result.raise_for_status()
             token_data = token_result.json()
 
-            session.setdefault(
-                self.session_uid_key,
+            g.uid = session.setdefault(
+                self.uid_key_in_session,
                 hexlify(generate_token(64)).decode('ascii'))
 
-            if 'error' in token_data:
+            if 'error' in g.token_data:
                 raise AuthError
             else:
                 self._update_tokens(**token_data)
@@ -290,13 +296,14 @@ class AuthorizationCodeFlow(object):
                        id_token=None,
                        expires_in=86400, **kwargs):
 
+        # explicitly passing id_token here because it's not yet in self
         claims = self.verify_claims(id_token)
+        g.token_data = {
+            'token_type': token_type,
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'claims': claims,
+        }
 
         self.cache.set(
-            session[self.session_uid_key], {
-                'access_token': access_token,
-                'token_type': token_type,
-                'refresh_token': refresh_token,
-                'id_token': id_token,
-                'claims': claims,
-            }, timeout=expires_in)
+            f"{g.uid}:token_data", g.token_data, timeout=expires_in)
