@@ -115,17 +115,12 @@ class AuthorizationCodeFlow(object):
             return abort(401)
         return decorated_function
 
-    def admin_required(self, f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            if self.is_authenticated and self.claims.get('role') == 'admin':
-                return f(*args, **kwargs)
-            return abort(401)
-        return decorated_function
-
     def get_user_auth_data(self):
         g.uid = session.get(self.uid_key_in_session)
-        g.token_data = self.cache.get(f"{g.uid}:token_data") or {}
+        if g.uid is not None:
+            g.token_data = self.cache.get(f"{g.uid}:token_data") or {}
+        else:
+            g.token_data = {}
 
     @property
     def is_authenticated(self):
@@ -228,7 +223,7 @@ class AuthorizationCodeFlow(object):
             'redirect_uri': url_for('flask-auth0.callback', _external=True)
         })
         return redirect(
-            '%s?%s' % (self.openid_config.authorization_url, query_parameters)
+            f"{self.openid_config.authorization_url}?{query_parameters}"
         )
 
     def refresh(self):
@@ -265,6 +260,8 @@ class AuthorizationCodeFlow(object):
             except BadSignature:  # State has been tampered with
                 self.app.logger.info(request.args.get('state'))
                 return abort(401)
+            else:
+                return_to = state.get('return_to', self.app.config.get('APPLICATION_ROOT'))
 
             token_result = requests.post(
                 self.openid_config.token_url,
@@ -286,7 +283,7 @@ class AuthorizationCodeFlow(object):
                 raise AuthError
             else:
                 self._update_tokens(**token_data)
-                return redirect(state.get('return_to', '/'))
+                return redirect(return_to)
 
         return abort(401)
 
