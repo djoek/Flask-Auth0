@@ -11,7 +11,7 @@ import requests
 from jose import jwt
 
 from itsdangerous import URLSafeSerializer, BadSignature
-from flask import session, abort, redirect, url_for, request, Blueprint, jsonify, g
+from flask import session, abort, redirect, url_for, request, Blueprint, jsonify, g, current_app
 from werkzeug.contrib.cache import SimpleCache, BaseCache
 
 from flask_auth0.oidc import OpenIDConfig
@@ -258,10 +258,10 @@ class AuthorizationCodeFlow(object):
             try:  # to get the state
                 state = self.signer.loads(request.args.get('state'))
             except BadSignature:  # State has been tampered with
-                self.app.logger.info(request.args.get('state'))
+                current_app.logger.info(request.args.get('state'))
                 return abort(401)
             else:
-                return_to = state.get('return_to', self.app.config.get('APPLICATION_ROOT'))
+                return_to = state.get('return_to', current_app.config.get('APPLICATION_ROOT'))
 
             token_result = requests.post(
                 self.openid_config.token_url,
