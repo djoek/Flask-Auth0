@@ -2,10 +2,7 @@ from functools import wraps
 from urllib.parse import urlencode
 from binascii import hexlify
 
-try:  # py3.6
-    from secrets import token_bytes as generate_token
-except ImportError:  # older
-    from os import urandom as generate_token
+from secrets import token_bytes as generate_token
 
 import requests
 from jose import jwt
@@ -18,6 +15,7 @@ from flask_auth0.oidc import OpenIDConfig
 
 
 class TokenDataDescriptor:
+
     __slots__ = ['token_name']
 
     def __init__(self, token_name=None):
