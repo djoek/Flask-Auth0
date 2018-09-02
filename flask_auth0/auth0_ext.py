@@ -259,7 +259,7 @@ class AuthorizationCodeFlow(object):
             # Not strictly necessary to send this along, but when omitted,
             # the user is redirected to the uri configured in the oauth2 backend
             #
-            # 'redirect_uri': url_for('flask-pingfederate.callback', _external=True),
+            # 'redirect_uri': url_for('flask-auth0.callback', _external=True),
         }
 
         return redirect(f'{self.openid_config.authorization_url}?{urlencode(query_parameters)}')
