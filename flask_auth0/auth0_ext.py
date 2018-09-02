@@ -15,7 +15,7 @@ from werkzeug.contrib.cache import SimpleCache, BaseCache
 from flask_auth0.oidc import OpenIDConfig
 
 
-__all__ = ("AuthorizationCodeFlow", )
+__all__ = ('AuthorizationCodeFlow', )
 
 
 class AuthorizationCodeFlow(object):
@@ -194,7 +194,7 @@ class AuthorizationCodeFlow(object):
                 except jwt.JWTClaimsError:
                     current_app.logger.debug('incorrect claims. check the audience and issuer')
                     return abort(403)
-                except Exception:
+                except JWTError:
                     current_app.logger.debug('invalid header. cannot parse id_token')
                     return abort(403)
                 else:
@@ -356,6 +356,9 @@ class AuthorizationCodeFlow(object):
                        refresh_token=None,
                        id_token=None,
                        expires_in=3600, **kwargs):
+
+        if kwargs:
+            current_app.logger.debug(f'extra params passed with token: {kwargs.keys()}')
 
         # not saving the id_token since it's short-lived
         # and serves no purpose after we validated the claims
