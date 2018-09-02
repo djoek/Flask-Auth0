@@ -175,35 +175,29 @@ class AuthorizationCodeFlow(object):
     def get_verified_claims(self, id_token=None):
         # Converts the jwt id_token into verified claims
         id_token = self.id_token if id_token is None else id_token
+        try:
+            # We can get the info in the id_token, but it needs to be verified
+            u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
 
-        # We can get the info in the id_token, but it needs to be verified
-        u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
-        # Get the key which was used to sign this id_token
-        kid, alg = u_header['kid'], u_header['alg']
+            # Get the key which was used to sign this id_token
+            kid, alg = u_header['kid'], u_header['alg']
 
-        # Obtain JWT and the keys to validate the signature
-        jwks_response = requests.get(self.openid_config.jwks_uri).json()
-        for key in jwks_response['keys']:
-            if key['kid'] == kid:
-                try:
+            # Obtain JWT and the keys to validate the signature
+            # TODO: exception handling
+            jwks_response = requests.get(self.openid_config.jwks_uri).json()
+
+            for key in jwks_response['keys']:
+                if key['kid'] == kid:
                     payload = jwt.decode(
                         token=id_token, key=key,
                         audience=self.client_id,
                         issuer=self.openid_config.issuer)
-                except jwt.ExpiredSignatureError:
-                    current_app.logger.debug('id_token is expired')
-                    return abort(403)
-                except jwt.JWTClaimsError:
-                    current_app.logger.debug('incorrect claims. check the audience and issuer')
-                    return abort(403)
-                except JWTError:
-                    current_app.logger.debug('invalid header. cannot parse id_token')
-                    return abort(403)
-                else:
                     return payload
 
-        current_app.logger.debug('invalid header. no matching keys found')
-        return abort(403)
+        except JWTError:
+            return {}
+
+        return {}
 
     # Retrieves the OpenID userinfo_endpoint
     def get_user_info(self):
