@@ -156,7 +156,7 @@ class AuthorizationCodeFlow(object):
 
     @property
     def id_token(self):
-        return g.flask_pingfederate_tokens.get('id_token')
+        return g.flask_auth0_tokens.get('id_token')
 
     @property
     def refresh_token(self):
@@ -360,17 +360,17 @@ class AuthorizationCodeFlow(object):
             current_app.logger.debug(f'got extra token data: {kwargs}')
 
         # Handle the access token
-        g.flask_pingfederate_tokens = {
+        g.flask_auth0_tokens = {
             'token_type': token_type,
             'access_token': access_token, }
 
         if id_token is not None:
-            g.flask_pingfederate_tokens['id_token'] = id_token
+            g.flask_auth0_tokens['id_token'] = id_token
 
         # Update the cache for the next request
         self.cache.set(
             self._make_key('token_data'),
-            g.flask_pingfederate_tokens,
+            g.flask_auth0_tokens,
             timeout=expires_in)
 
         # Handle the refresh_token if present
