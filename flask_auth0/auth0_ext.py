@@ -341,8 +341,6 @@ class AuthorizationCodeFlow(object):
         token_result.raise_for_status()
         token_data = token_result.json()
 
-        current_app.logger.debug(f'refresh got {token_data}')
-
         self._update_tokens(**token_data)
 
         if callable(self._after_refresh_handler):
