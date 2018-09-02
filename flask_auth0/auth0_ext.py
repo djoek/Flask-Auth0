@@ -173,27 +173,35 @@ class AuthorizationCodeFlow(object):
         return url_for('flask-auth0.logout', _external=True)
 
     def get_verified_claims(self, id_token):
-        # Converts the jwt id_token into verified claims
-        try:
-            # We can get the info in the id_token, but it needs to be verified
-            u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
 
-            # Get the key which was used to sign this id_token
-            kid, alg = u_header['kid'], u_header['alg']
+        # We can get the info in the id_token, but it needs to be verified
+        u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
+        # Get the key which was used to sign this id_token
+        kid, alg = u_header['kid'], u_header['alg']
 
-            # Obtain JWT and the keys to validate the signature
-            jwks_response = requests.get(self.openid_config.jwks_uri).json()
-            for key in jwks_response['keys']:
-                if key['kid'] == kid:
+        # Obtain JWT and the keys to validate the signature
+        jwks_response = requests.get(self.openid_config.jwks_uri).json()
+        for key in jwks_response['keys']:
+            if key['kid'] == kid:
+                try:
                     payload = jwt.decode(
                         token=id_token, key=key,
                         audience=self.client_id,
                         issuer=self.openid_config.issuer)
+                except jwt.ExpiredSignatureError:
+                    current_app.logger.debug('id_token is expired')
+                    return abort(403)
+                except jwt.JWTClaimsError:
+                    current_app.logger.debug('incorrect claims. check the audience and issuer')
+                    return abort(403)
+                except Exception:
+                    current_app.logger.debug('invalid header. cannot parse id_token')
+                    return abort(403)
+                else:
                     return payload
-        except JWTError:
-            return abort(401)
 
-        return abort(401)
+        current_app.logger.debug('invalid header. no matching keys found')
+        return abort(403)
 
     # Retrieves the OpenID userinfo_endpoint
     def get_user_info(self):
