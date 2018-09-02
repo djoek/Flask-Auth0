@@ -160,7 +160,7 @@ class AuthorizationCodeFlow(object):
 
     @property
     def refresh_token(self):
-        return self.cache.get(self._make_key('refresh_token')) or {}
+        return self.cache.get(self._make_key('refresh_token'))
 
     @property
     def login_url(self):
