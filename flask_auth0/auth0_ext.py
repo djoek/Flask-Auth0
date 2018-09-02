@@ -155,12 +155,12 @@ class AuthorizationCodeFlow(object):
         return f'{self.token_type} {self.access_token}'
 
     @property
-    def refresh_token(self):
-        return self.cache.get(self._make_key('refresh_token')) or {}
+    def id_token(self):
+        return g.flask_pingfederate_tokens.get('id_token')
 
     @property
-    def claims(self):
-        return self.cache.get(self._make_key('claims')) or {}
+    def refresh_token(self):
+        return self.cache.get(self._make_key('refresh_token')) or {}
 
     @property
     def login_url(self):
@@ -172,7 +172,9 @@ class AuthorizationCodeFlow(object):
         # Returns the full url for doing a logout
         return url_for('flask-auth0.logout', _external=True)
 
-    def get_verified_claims(self, id_token):
+    def get_verified_claims(self, id_token=None):
+        # Converts the jwt id_token into verified claims
+        id_token = self.id_token if id_token is None else id_token
 
         # We can get the info in the id_token, but it needs to be verified
         u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
@@ -231,7 +233,6 @@ class AuthorizationCodeFlow(object):
         self.cache.delete_many(
             self._make_key('token_data'),
             self._make_key('refresh_token'),
-            self._make_key('claims'),
         )
         session.clear()
 
@@ -248,12 +249,12 @@ class AuthorizationCodeFlow(object):
         :return: redirect()
         """
 
-        current_app.logger.debug('login() was called')
+        current_app.logger.info('login() was called')
 
         assert prompt in {'none', 'login', 'consent', 'select_account'}
 
         if return_to is None:
-            return_to = current_app.config.get('APPLICATION_ROOT', '/')
+            return_to = request.args.get('return_to') or request.referrer or '/'
 
         query_parameters = {
             'response_type': 'code',
@@ -264,7 +265,7 @@ class AuthorizationCodeFlow(object):
             # Not strictly necessary to send this along, but when omitted,
             # the user is redirected to the uri configured in the oauth2 backend
             #
-            # 'redirect_uri': url_for('flask-auth0.callback', _external=True),
+            # 'redirect_uri': url_for('flask-pingfederate.callback', _external=True),
         }
 
         return redirect(f'{self.openid_config.authorization_url}?{urlencode(query_parameters)}')
@@ -295,8 +296,12 @@ class AuthorizationCodeFlow(object):
                     'client_secret': self.client_secret,
                     'redirect_uri': url_for('flask-auth0.callback', _external=True)
                 })
-            token_result.raise_for_status()
-            token_data = token_result.json()
+            try:
+                token_result.raise_for_status()
+            except requests.HTTPError:
+                return abort(403)
+            else:
+                token_data = token_result.json()
 
             # Handle errors
             if 'error' in token_data:
@@ -358,42 +363,28 @@ class AuthorizationCodeFlow(object):
                        expires_in=3600, **kwargs):
 
         if kwargs:
-            current_app.logger.debug(f'extra params passed with token: {kwargs.keys()}')
+            current_app.logger.debug(f'got extra token data: {kwargs}')
 
-        # not saving the id_token since it's short-lived
-        # and serves no purpose after we validated the claims
-        g.flask_auth0_tokens = {
+        # Handle the access token
+        g.flask_pingfederate_tokens = {
             'token_type': token_type,
-            'access_token': access_token,
-        }
+            'access_token': access_token, }
+
+        if id_token is not None:
+            g.flask_pingfederate_tokens['id_token'] = id_token
 
         # Update the cache for the next request
         self.cache.set(
             self._make_key('token_data'),
-            g.flask_auth0_tokens,
+            g.flask_pingfederate_tokens,
             timeout=expires_in)
 
-        # Handle the id_token if present
-        if id_token is not None:
-            # The id_token is a JWT that requires verification and decoding
-            claims = self.get_verified_claims(id_token)
-
-            if claims:
-                self.cache.set(
-                    self._make_key('claims'),
-                    claims,
-                    # id_tokens express their validity in absolute timestamps
-                    # our cache layers wants relative seconds, so math
-                    timeout=claims.get('exp') - claims.get('iat'))
-
         # Handle the refresh_token if present
+        # it doesn't have a timeout since the refresh token shouldn't expire
         if refresh_token is not None:
             self.cache.set(
                 self._make_key('refresh_token'),
-                refresh_token,
-                # refresh tokens in principle don't expire,
-                # being a bit more conservative here
-                timeout=7 * 24 * 60 * 60)
+                refresh_token, )
 
     # To further obfuscate the relation between the cache key and the session id,
     # the token itself is cryptographically hashed, and that hash is used as the key in the backend cache
@@ -406,6 +397,10 @@ class AuthorizationCodeFlow(object):
     # instead of recalculating the same value over and over again
     @lru_cache(maxsize=256)
     def _obfuscate_value(self, value: bytes, uid: bytes):
-        hs = blake2b(key=self._hash_key, person=uid)
-        hs.update(value)
-        return hs.hexdigest()
+        hs = blake2b(
+            value,
+            key=self._hash_key,
+            person=uid,
+            digest_size=32,
+        )
+        return hs.digest()
