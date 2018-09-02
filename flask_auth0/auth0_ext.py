@@ -243,7 +243,7 @@ class AuthorizationCodeFlow(object):
         :return: redirect()
         """
 
-        current_app.logger.info('login() was called')
+        current_app.logger.debug('login() was called')
 
         assert prompt in {'none', 'login', 'consent', 'select_account'}
 
