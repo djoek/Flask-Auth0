@@ -256,10 +256,7 @@ class AuthorizationCodeFlow(object):
             'state': self.signer.dumps({'return_to': return_to}),
             'client_id': self.client_id,
             'prompt': prompt,
-            # Not strictly necessary to send this along, but when omitted,
-            # the user is redirected to the uri configured in the oauth2 backend
-            #
-            # 'redirect_uri': url_for('flask-auth0.callback', _external=True),
+            'redirect_uri': url_for('flask-auth0.callback', _external=True),
         }
 
         return redirect(f'{self.openid_config.authorization_url}?{urlencode(query_parameters)}')
@@ -299,7 +296,7 @@ class AuthorizationCodeFlow(object):
 
             # Handle errors
             if 'error' in token_data:
-                return abort(Response(token_data.get('error'), status=401))
+                return abort(403)
             else:
                 self._update_tokens(**token_data)
 
@@ -355,7 +352,7 @@ class AuthorizationCodeFlow(object):
                        expires_in=3600, **kwargs):
 
         if kwargs:
-            current_app.logger.debug(f'got extra token data: {kwargs}')
+            current_app.logger.debug(f'got extra token data: {kwargs.keys()}')
 
         # Handle the access token
         g.flask_auth0_tokens = {
@@ -389,10 +386,9 @@ class AuthorizationCodeFlow(object):
     # instead of recalculating the same value over and over again
     @lru_cache(maxsize=256)
     def _obfuscate_value(self, value: bytes, uid: bytes):
-        hs = blake2b(
+        return blake2b(
             value,
             key=self._hash_key,
             person=uid,
             digest_size=32,
-        )
-        return hs.digest()
+        ).hexdigest()
