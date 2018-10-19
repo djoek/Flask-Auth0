@@ -6,13 +6,15 @@ import uuid
 
 import requests
 from jose import jwt
-from jose.exceptions import JWTError
+from jose.exceptions import JWTError, ExpiredSignatureError
 
 from itsdangerous import URLSafeSerializer, BadSignature
 from flask import session, abort, redirect, url_for, request, Blueprint, Response, current_app, g
 from werkzeug.contrib.cache import SimpleCache, BaseCache
 
 from flask_auth0.oidc import OpenIDConfig
+
+from Crypto.Protocol.KDF import scrypt
 
 
 __all__ = ('AuthorizationCodeFlow', )
@@ -38,6 +40,7 @@ class AuthorizationCodeFlow(object):
         # :param session_key: name of the key used in the session to store the uid
 
         self.app = app
+        self.user_agent = f"flask-auth0/1.4.1 python-requests/{requests.__version__}"
 
         self.base_url = base_url
         self.client_id = client_id
@@ -61,8 +64,9 @@ class AuthorizationCodeFlow(object):
 
         # Utilities
         self.signer = None
+        self.hasher = None
+
         self.openid_config = None
-        self._hash_key = None
 
         if app is not None:
             self.init_app(app)
@@ -83,7 +87,19 @@ class AuthorizationCodeFlow(object):
         # Utils
         self.signer = URLSafeSerializer(app.secret_key)
         self.openid_config = OpenIDConfig(self.base_url)
-        self._hash_key = app.secret_key.encode()[:64] if not isinstance(app.secret_key, bytes) else app.secret_key[:64]
+
+        # Setup some crypto stuff.
+        # I am not a cryptographer and might do this wrong. For prod use, tweak appropriately.
+        # If you don't know why or what into you should change these values,
+        # google for "Key Derivation Function" or ask someone with a Security background
+        cache_key_hash_key, signer_key = scrypt(
+            password=app.secret_key, salt=b'flask-auth0',
+            key_len=16, N=256, r=8, p=1, num_keys=2)
+
+        # Utils
+        self.signer = URLSafeSerializer(signer_key)
+        self.hasher = lru_cache(maxsize=256)(
+            lambda value, uid: blake2b(value, key=cache_key_hash_key, person=uid, digest_size=32).hexdigest())
 
         # Routes
         blueprint = Blueprint('flask-auth0', __name__)
@@ -162,16 +178,6 @@ class AuthorizationCodeFlow(object):
     def refresh_token(self):
         return self.cache.get(self._make_key('refresh_token'))
 
-    @property
-    def login_url(self):
-        # Returns the full url for doing a login
-        return url_for('flask-auth0.login', _external=True)
-
-    @property
-    def logout_url(self):
-        # Returns the full url for doing a logout
-        return url_for('flask-auth0.logout', _external=True)
-
     def get_verified_claims(self, id_token=None):
         # Converts the jwt id_token into verified claims
         id_token = self.id_token if id_token is None else id_token
@@ -182,20 +188,33 @@ class AuthorizationCodeFlow(object):
             # Get the key which was used to sign this id_token
             kid, alg = u_header['kid'], u_header['alg']
 
-            # Obtain JWT and the keys to validate the signature
-            # TODO: exception handling
-            jwks_response = requests.get(self.openid_config.jwks_uri).json()
-
-            for key in jwks_response['keys']:
-                if key['kid'] == kid:
-                    payload = jwt.decode(
-                        token=id_token, key=key,
-                        audience=self.client_id,
-                        issuer=self.openid_config.issuer)
-                    return payload
-
         except JWTError:
+            current_app.logger.warn('Tried to verify claims of a broken id_token')
             return {}
+
+        else:
+            # Obtain JWT and the keys to validate the signature
+            try:
+                jwks_response = requests.get(
+                    self.openid_config.jwks_uri,
+                    headers={
+                        'User-Agent': self.user_agent,
+                    },
+                )
+            except requests.HTTPError:
+                return {}
+            else:
+                jwks_data = jwks_response.json()
+                try:
+                    for key in jwks_data['keys']:
+                        if key['kid'] == kid:
+                            payload = jwt.decode(
+                                token=id_token, key=key,
+                                audience=self.client_id,
+                                issuer=self.openid_config.issuer)
+                            return payload
+                except ExpiredSignatureError:
+                    current_app.logger.warn('Tried to verify claims of an expired id_token')
 
         return {}
 
@@ -214,6 +233,18 @@ class AuthorizationCodeFlow(object):
             return {}
         else:
             return result.json()
+
+    def logout_url(self, return_to=None):
+
+        if return_to is None:
+            return_to = request.args.get('return_to') or request.referrer or '/'
+
+        # Redirect to auth0 logout
+        params = {
+            'returnTo': return_to or url_for('index', _external=True),
+            'client_id': self.client_id}
+
+        return f'{self.openid_config.issuer}/v2/logout?{urlencode(params)}'
 
     # Route definitions
     def logout(self, return_to=None):
@@ -234,37 +265,39 @@ class AuthorizationCodeFlow(object):
             self._after_logout_handler()
             current_app.logger.debug('after_logout_handler() was called')
 
-        # Redirect to auth0 logout
-        params = {
-            'returnTo': return_to or url_for('index', _external=True),
-            'client_id': self.client_id}
+        return redirect(self.logout_url(return_to=return_to))
 
-        return redirect(self.openid_config.issuer + 'v2/logout?' + urlencode(params))
+    def login_url(self, return_to=None, prompt='login', response_type="code", redirect_uri=None):
+        # Returns the full url for doing a login
+        assert prompt in {'none', 'login', 'consent', 'select_account'}
+        assert response_type in {'code', 'token'}
 
-    def login(self, return_to=None, prompt='login'):
+        if return_to is None:
+            return_to = request.args.get('return_to') or request.referrer or '/'
+
+        if redirect_uri is None:
+            redirect_uri = url_for('flask-pingfederate.callback', _external=True)
+
+        query_parameters = {
+            'response_type': response_type,
+            'scope': self.scope,
+            'state': self.signer.dumps({'return_to': return_to}),
+            'client_id': self.client_id,
+            'prompt': prompt,
+            # Not strictly necessary to include redirect_uri, but avoids potential issues
+            'redirect_uri': redirect_uri,
+        }
+
+        return f'{self.openid_config.authorization_url}?{urlencode(query_parameters)}'
+
+    def login(self, return_to=None, prompt='login', response_type="code"):
         """
         Handler for logging in a user.
         This provides a redirect to the authorization url
         :return: redirect()
         """
-
         current_app.logger.debug('login() was called')
-
-        assert prompt in {'none', 'login', 'consent', 'select_account'}
-
-        if return_to is None:
-            return_to = request.args.get('return_to') or request.referrer or '/'
-
-        query_parameters = {
-            'response_type': 'code',
-            'scope': self.scope,
-            'state': self.signer.dumps({'return_to': return_to}),
-            'client_id': self.client_id,
-            'prompt': prompt,
-            'redirect_uri': url_for('flask-auth0.callback', _external=True),
-        }
-
-        return redirect(f'{self.openid_config.authorization_url}?{urlencode(query_parameters)}')
+        return redirect(self.login_url(return_to=return_to, prompt=prompt, response_type=response_type))
 
     def callback(self):
         """
@@ -385,15 +418,4 @@ class AuthorizationCodeFlow(object):
     # Is this strictly necessary to make it work? No, but it seemed like a cool thing to do :)
     def _make_key(self, value: str):
         uid = session.get(self.session_key) or b''
-        return self._obfuscate_value(value=value.encode(), uid=uid.bytes)
-
-    # Since the function below is idempotent, we can use a cache
-    # instead of recalculating the same value over and over again
-    @lru_cache(maxsize=256)
-    def _obfuscate_value(self, value: bytes, uid: bytes):
-        return blake2b(
-            value,
-            key=self._hash_key,
-            person=uid,
-            digest_size=32,
-        ).hexdigest()
+        return self.hasher(value=value.encode(), uid=uid.bytes)
