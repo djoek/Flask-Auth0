@@ -276,7 +276,7 @@ class AuthorizationCodeFlow(object):
             return_to = request.args.get('return_to') or request.referrer or '/'
 
         if redirect_uri is None:
-            redirect_uri = url_for('flask-pingfederate.callback', _external=True)
+            redirect_uri = url_for('flask-auth0.callback', _external=True)
 
         query_parameters = {
             'response_type': response_type,
