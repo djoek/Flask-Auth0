@@ -92,11 +92,11 @@ class AuthorizationCodeFlow(object):
         blueprint.add_url_rule('/logout', 'logout', self.logout)
         blueprint.add_url_rule('/callback', 'callback', self.callback)
 
-        blueprint.before_app_request(self.get_auth_data)
+        blueprint.before_app_request(self._initialize_request_auth)
 
         app.register_blueprint(blueprint=blueprint, url_prefix=self.url_prefix)
 
-    def get_auth_data(self):
+    def _initialize_request_auth(self):
         # At the beginning of each request, get the tokens from the cache
         # and store them in Flask.g, which exists for the duration of the request.
         # If the user isn't logged in yet, this value will be an empty dict
@@ -216,7 +216,7 @@ class AuthorizationCodeFlow(object):
             return result.json()
 
     # Route definitions
-    def logout(self, return_to='/'):
+    def logout(self, return_to=None):
         """
         Handler for logging out a user.
         This clears the server-side session entry and redirects to the index endpoint
@@ -234,7 +234,12 @@ class AuthorizationCodeFlow(object):
             self._after_logout_handler()
             current_app.logger.debug('after_logout_handler() was called')
 
-        return redirect(return_to)
+        # Redirect to auth0 logout
+        params = {
+            'returnTo': return_to or url_for('index', _external=True),
+            'client_id': self.client_id}
+
+        return redirect(self.openid_config.issuer + 'v2/logout?' + urlencode(params))
 
     def login(self, return_to=None, prompt='login'):
         """
@@ -379,7 +384,7 @@ class AuthorizationCodeFlow(object):
     # the token itself is cryptographically hashed, and that hash is used as the key in the backend cache
     # Is this strictly necessary to make it work? No, but it seemed like a cool thing to do :)
     def _make_key(self, value: str):
-        uid = session.get(self.session_key)
+        uid = session.get(self.session_key) or b''
         return self._obfuscate_value(value=value.encode(), uid=uid.bytes)
 
     # Since the function below is idempotent, we can use a cache
