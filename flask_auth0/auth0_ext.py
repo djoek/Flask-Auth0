@@ -244,7 +244,7 @@ class AuthorizationCodeFlow(object):
             'returnTo': return_to or url_for('index', _external=True),
             'client_id': self.client_id}
 
-        return f'{self.openid_config.issuer}/v2/logout?{urlencode(params)}'
+        return f'{self.openid_config.issuer}v2/logout?{urlencode(params)}'
 
     # Route definitions
     def logout(self, return_to=None):
