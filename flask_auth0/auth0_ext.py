@@ -9,7 +9,10 @@ from jose import jwt
 from jose.exceptions import JWTError, ExpiredSignatureError
 
 from itsdangerous import URLSafeSerializer, BadSignature
-from flask import session, abort, redirect, url_for, request, Blueprint, Response, current_app, g
+from flask import session, redirect, url_for, request, Blueprint, Response, g
+
+from werkzeug.exceptions import \
+    BadRequest, Unauthorized, Forbidden, InternalServerError, ServiceUnavailable
 from werkzeug.contrib.cache import SimpleCache, BaseCache
 
 from flask_auth0.oidc import OpenIDConfig
@@ -54,6 +57,8 @@ class AuthorizationCodeFlow(object):
         self._after_logout_handler = None
         self._after_refresh_handler = None
 
+        self._logger = None
+
         # Setup backend cache
         if cache is None:
             self.cache = SimpleCache()
@@ -84,10 +89,6 @@ class AuthorizationCodeFlow(object):
         self.session_key = app.config.setdefault('AUTH0_SESSION_KEY', self.session_key)
         self.url_prefix = app.config.setdefault('AUTH0_URL_PREFIX', self.url_prefix)
 
-        # Utils
-        self.signer = URLSafeSerializer(app.secret_key)
-        self.openid_config = OpenIDConfig(self.base_url)
-
         # Setup some crypto stuff.
         # I am not a cryptographer and might do this wrong. For prod use, tweak appropriately.
         # If you don't know why or what into you should change these values,
@@ -100,6 +101,9 @@ class AuthorizationCodeFlow(object):
         self.signer = URLSafeSerializer(signer_key)
         self.hasher = lru_cache(maxsize=256)(
             lambda value, uid: blake2b(value, key=cache_key_hash_key, person=uid, digest_size=32).hexdigest())
+
+        self._logger = app.logger
+        self.openid_config = OpenIDConfig(self.base_url)
 
         # Routes
         blueprint = Blueprint('flask-auth0', __name__)
@@ -117,7 +121,7 @@ class AuthorizationCodeFlow(object):
         # and store them in Flask.g, which exists for the duration of the request.
         # If the user isn't logged in yet, this value will be an empty dict
 
-        # Create a uuid in the session if one doesn't yet exist
+        # Get the uuid from the session or create one if one doesn't yet exist
         session.setdefault(self.session_key, uuid.uuid4())
         g.flask_auth0_tokens = self.cache.get(self._make_key('token_data')) or {}
 
@@ -128,21 +132,21 @@ class AuthorizationCodeFlow(object):
         def decorated_function(*args, **kwargs):
             if self.is_authenticated:
                 return f(*args, **kwargs)
-            return abort(401)
+            raise Unauthorized(description="User is not authenticated")
         return decorated_function
 
     # Three decorators to make it easy for actions to trigger after login, logout, refresh
-    def after_login(self, f):
-        self._after_login_handler = f
-        return f
+    def after_login(self, func):
+        self._after_login_handler = func
+        return func
 
-    def after_logout(self, f):
-        self._after_logout_handler = f
-        return f
+    def after_logout(self, func):
+        self._after_logout_handler = func
+        return func
 
-    def after_refresh(self, f):
-        self._after_refresh_handler = f
-        return f
+    def after_refresh(self, func):
+        self._after_refresh_handler = func
+        return func
 
     # Bunch of useful properties
     @property
@@ -189,7 +193,7 @@ class AuthorizationCodeFlow(object):
             kid, alg = u_header['kid'], u_header['alg']
 
         except JWTError:
-            current_app.logger.warn('Tried to verify claims of a broken id_token')
+            self._logger.warn('Tried to verify claims of a broken id_token')
             return {}
 
         else:
@@ -214,13 +218,13 @@ class AuthorizationCodeFlow(object):
                                 issuer=self.openid_config.issuer)
                             return payload
                 except ExpiredSignatureError:
-                    current_app.logger.warn('Tried to verify claims of an expired id_token')
+                    self._logger.warn('Tried to verify claims of an expired id_token')
 
         return {}
 
     # Retrieves the OpenID userinfo_endpoint
     def get_user_info(self):
-        current_app.logger.debug('get_user_info() was called')
+        self._logger.debug('get_user_info() was called')
 
         try:
             result = requests.get(
@@ -253,7 +257,7 @@ class AuthorizationCodeFlow(object):
         This clears the server-side session entry and redirects to the index endpoint
         :return: redirect()
         """
-        current_app.logger.debug('logout() was called')
+        self._logger.debug('logout() was called')
 
         self.cache.delete_many(
             self._make_key('token_data'),
@@ -263,7 +267,7 @@ class AuthorizationCodeFlow(object):
 
         if callable(self._after_logout_handler):
             self._after_logout_handler()
-            current_app.logger.debug('after_logout_handler() was called')
+            self._logger.debug('after_logout_handler() was called')
 
         return redirect(self.logout_url(return_to=return_to))
 
@@ -296,7 +300,7 @@ class AuthorizationCodeFlow(object):
         This provides a redirect to the authorization url
         :return: redirect()
         """
-        current_app.logger.debug('login() was called')
+        self._logger.debug('login() was called')
         return redirect(self.login_url(return_to=return_to, prompt=prompt, response_type=response_type))
 
     def callback(self):
@@ -305,15 +309,29 @@ class AuthorizationCodeFlow(object):
         This gets the code and turns it into tokens
         :return: redirect()
         """
-        current_app.logger.debug('callback() was called')
+        self._logger.debug('callback() was called')
 
-        # try to login using the code in the url arg
-        if 'code' in request.args:
+        try:  # to get the state
+            state = self.signer.loads(request.args.get('state'))
+        except BadSignature:  # State has been tampered with
+            return BadRequest(description="State could not be validated")
+        except TypeError:  # state is None, not in the url
+            state = {}
 
-            try:  # to get the state
-                state = self.signer.loads(request.args.get('state'))
-            except BadSignature:  # State has been tampered with
-                return abort(403)
+        # Handle callback errors
+        error = request.args.get('error')
+        error_description = request.args.get('error_description')
+        error_uri = request.args.get('error_uri')
+
+        if error is not None:
+            return self.callback_error_handler(
+                error=error,
+                error_description=error_description,
+                error_uri=error_uri, state=state
+            )
+
+        code = request.args.get('code')
+        if code is not None:  # try to login using the code in the url arg
 
             # Get the tokens using the code
             token_result = requests.post(
@@ -325,23 +343,35 @@ class AuthorizationCodeFlow(object):
                     'client_secret': self.client_secret,
                     'redirect_uri': url_for('flask-auth0.callback', _external=True)
                 })
+
             try:
-                token_result.raise_for_status()
-            except requests.HTTPError:
-                return abort(403)
-            else:
                 token_data = token_result.json()
 
-            # Handle errors
-            if 'error' in token_data:
-                return abort(403)
+                # Handle errors in access token request
+                error = token_data.get('error')
+                error_description = token_data.get('error_description')
+                error_uri = token_data.get('error_uri')
+                if error is not None:
+                    return self.access_token_request_error_handler(
+                        error=error,
+                        error_description=error_description,
+                        error_uri=error_uri)
+
+                # Raise for other HTTP trouble
+                token_result.raise_for_status()
+
+            except requests.HTTPError as e:
+                self._logger.error(f'Could not exchange code for access_token: {e}')
+                raise InternalServerError(
+                    description=f"Could not obtain access_token with code")
+
             else:
                 self._update_tokens(**token_data)
 
             # Execute user actions
             if callable(self._after_login_handler):
+                self._logger.debug('after_login_handler() was called')
                 self._after_login_handler()
-                current_app.logger.debug('after_login_handler() was called')
 
             # Get return url from the state
             return_to = state.get('return_to')
@@ -351,8 +381,8 @@ class AuthorizationCodeFlow(object):
             # Fall back on a default
             return Response('Login Successful', status=200)
 
-        # No code in url, return an error
-        return abort(403)
+        else:  # No code in url, return an error
+            return Unauthorized(description="Unauthorized")
 
     # Convenience functions
     def refresh(self):
@@ -361,7 +391,7 @@ class AuthorizationCodeFlow(object):
         This exchanges the refresh_token for a new access_token
         :return: None
         """
-        current_app.logger.debug('refresh() was called')
+        self._logger.debug('refresh() was called')
 
         token_result = requests.post(
             self.openid_config.token_url,
@@ -373,6 +403,7 @@ class AuthorizationCodeFlow(object):
                 'refresh_token': self.refresh_token,
             },
         )
+        # TODO: better error handling (see callback)
         token_result.raise_for_status()
         token_data = token_result.json()
 
@@ -380,7 +411,7 @@ class AuthorizationCodeFlow(object):
 
         if callable(self._after_refresh_handler):
             self._after_refresh_handler()
-            current_app.logger.debug('after_refresh_handler() was called')
+            self._logger.debug('after_refresh_handler() was called')
 
     # Logic for updating the cache with new token info
     def _update_tokens(self, *,
@@ -390,7 +421,7 @@ class AuthorizationCodeFlow(object):
                        expires_in=3600, **kwargs):
 
         if kwargs:
-            current_app.logger.debug(f'got extra token data: {kwargs.keys()}')
+            self._logger.debug(f'got extra token data: {kwargs.keys()}')
 
         # Handle the access token
         g.flask_auth0_tokens = {
@@ -419,3 +450,47 @@ class AuthorizationCodeFlow(object):
     def _make_key(self, value: str):
         uid = session.get(self.session_key) or b''
         return self.hasher(value=value.encode(), uid=uid.bytes)
+
+    def callback_error_handler(
+            self, error, error_description=None, error_uri=None, state=None):
+
+        self._logger.error(f'{error}: {error_description} {error_uri} {state}')
+
+        error_mapping = {
+            'invalid_request': BadRequest,  # 400
+            'unauthorized': Unauthorized,  # 401
+            'unauthorized_client': Unauthorized,  # 401
+            'access_denied': Forbidden,  # 403
+            'unsupported_response_type': Forbidden,  # 403
+            'invalid_scope': Forbidden,  # 403
+            'server_error': InternalServerError,  # 500
+            'temporarily_unavailable': ServiceUnavailable,  # 503
+        }
+
+        HTTPError = error_mapping.get(error, BadRequest)
+        raise HTTPError(description=error_description)  # 503
+
+    def access_token_request_error_handler(
+            self, error, error_description=None, error_uri=None):
+
+        self._logger.error(f'{error}: {error_description} {error_uri}')
+
+        if error == 'invalid_scope':
+            pass
+
+        if error == 'unsupported_grant_type':
+            pass
+
+        if error == 'unauthorized_client':
+            pass
+
+        if error == 'invalid_grant':
+            pass
+
+        if error == 'invalid_client':
+            pass
+
+        if error == 'invalid_request':
+            pass
+
+        raise InternalServerError(description="error trying to obtain access_token")
