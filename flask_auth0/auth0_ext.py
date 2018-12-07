@@ -467,8 +467,8 @@ class AuthorizationCodeFlow(object):
             'temporarily_unavailable': ServiceUnavailable,  # 503
         }
 
-        HTTPError = error_mapping.get(error, BadRequest)
-        raise HTTPError(description=error_description)  # 503
+        HTTPError = error_mapping.get(error, BadRequest)  # 503
+        raise HTTPError(description=error_description)
 
     def access_token_request_error_handler(
             self, error, error_description=None, error_uri=None):
