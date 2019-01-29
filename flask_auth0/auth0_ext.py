@@ -386,6 +386,11 @@ class AuthorizationCodeFlow(object):
         else:  # No code in url, return an error
             return Unauthorized(description="Unauthorized")
 
+    def verify_email(self):
+        email = request.args.get('email')
+        message = request.args.get('message')
+        success = request.args.get('success')
+
     # Convenience functions
     def refresh(self):
         """
