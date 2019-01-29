@@ -16,6 +16,8 @@ from werkzeug.exceptions import \
 from werkzeug.contrib.cache import SimpleCache, BaseCache
 
 from flask_auth0.oidc import OpenIDConfig
+from flask_auth0.__version__ import __version__
+
 
 from Crypto.Protocol.KDF import scrypt
 
@@ -43,7 +45,7 @@ class AuthorizationCodeFlow(object):
         # :param session_key: name of the key used in the session to store the uid
 
         self.app = app
-        self.user_agent = f"flask-auth0/1.4.1 python-requests/{requests.__version__}"
+        self.user_agent = f"{__name__}/{__version__} python-requests/{requests.__version__}"
 
         self.base_url = base_url
         self.client_id = client_id
