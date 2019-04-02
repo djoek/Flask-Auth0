@@ -20,7 +20,7 @@ Flask-Auth0 provides routes named /oauth2/login, /oauth2/logout, /oauth2/callbac
 ```python
 import os
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, render_template, request
 from flask_auth0 import AuthorizationCodeFlow
 
 from werkzeug.contrib.cache import FileSystemCache
