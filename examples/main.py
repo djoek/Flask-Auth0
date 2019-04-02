@@ -1,6 +1,6 @@
 import os
 
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, jsonify, render_template, request
 from flask_auth0 import AuthorizationCodeFlow
 
 from werkzeug.contrib.cache import FileSystemCache
