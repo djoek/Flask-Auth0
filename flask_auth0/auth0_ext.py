@@ -1,6 +1,6 @@
 from functools import wraps, lru_cache
 from urllib.parse import urlencode
-from hashlib import blake2b
+from hashlib import blake2b, scrypt
 
 import uuid
 
@@ -13,13 +13,10 @@ from flask import session, redirect, url_for, request, Blueprint, Response, g
 
 from werkzeug.exceptions import \
     BadRequest, Unauthorized, Forbidden, InternalServerError, ServiceUnavailable
-from werkzeug.contrib.cache import SimpleCache, BaseCache
+from cachelib import SimpleCache, BaseCache
 
 from flask_auth0.oidc import OpenIDConfig
 from flask_auth0.__version__ import __version__
-
-
-from Crypto.Protocol.KDF import scrypt
 
 
 __all__ = ('AuthorizationCodeFlow', )
@@ -67,7 +64,8 @@ class AuthorizationCodeFlow(object):
         elif isinstance(cache, BaseCache):
             self.cache = cache
         else:
-            raise ValueError('your backend cache must implement `werkzeug.contrib.cache.BaseCache`')
+            raise ValueError(
+                f'your backend cache must implement `cachelib.BaseCache`. {cache} is {type(cache)}')
 
         # Utilities
         self.signer = None
@@ -95,14 +93,15 @@ class AuthorizationCodeFlow(object):
         # I am not a cryptographer and might do this wrong. For prod use, tweak appropriately.
         # If you don't know why or what into you should change these values,
         # google for "Key Derivation Function" or ask someone with a Security background
-        cache_key_hash_key, signer_key = scrypt(
-            password=app.secret_key, salt=b'flask-auth0',
-            key_len=16, N=256, r=8, p=1, num_keys=2)
+        key_material = scrypt(
+            password=app.secret_key.encode(),
+            salt=b'flask-auth0',
+            dklen=32, n=256, r=8, p=1)
 
         # Utils
-        self.signer = URLSafeSerializer(signer_key)
-        self.hasher = lru_cache(maxsize=256)(
-            lambda value, uid: blake2b(value, key=cache_key_hash_key, person=uid, digest_size=32).hexdigest())
+        self.signer = URLSafeSerializer(key_material[:16])
+        self.hasher = lru_cache(maxsize=256)(  # Because this is non-trivial, we cache already computes values
+            lambda value, uid: blake2b(value, key=key_material[16:], person=uid, digest_size=32).digest())
 
         self._logger = app.logger
         self.openid_config = OpenIDConfig(self.base_url)
@@ -114,28 +113,27 @@ class AuthorizationCodeFlow(object):
         blueprint.add_url_rule('/logout', 'logout', self.logout)
         blueprint.add_url_rule('/callback', 'callback', self.callback)
 
-        blueprint.before_app_request(self._initialize_request_auth)
-
         app.register_blueprint(blueprint=blueprint, url_prefix=self.url_prefix)
 
-    def _initialize_request_auth(self):
-        # At the beginning of each request, get the tokens from the cache
-        # and store them in Flask.g, which exists for the duration of the request.
-        # If the user isn't logged in yet, this value will be an empty dict
+    def protected(self, enforce=False):
+        """
+        This decorator indicates that the auth info needs to be available in the decorated route
+        :param enforce: returns 401 if the auth info is not available
+        :return:
+        """
+        def actual_decorator(func):
 
-        # Get the uuid from the session or create one if one doesn't yet exist
-        session.setdefault(self.session_key, uuid.uuid4())
-        g.flask_auth0_tokens = self.cache.get(self._make_key('token_data')) or {}
+            @wraps(func)
+            def decorated_function(*args, **kwargs):
+                if enforce:
+                    if self.is_authenticated:
+                        return func(*args, **kwargs)
+                    raise Unauthorized()
+                return func(*args, **kwargs)
 
-    def login_required(self, f):
-        # A basic decorator to protect routes
-        # Returns 401 if the user is not authenticated, otherwise the route
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            if self.is_authenticated:
-                return f(*args, **kwargs)
-            raise Unauthorized(description="User is not authenticated")
-        return decorated_function
+            return decorated_function
+
+        return actual_decorator
 
     # Three decorators to make it easy for actions to trigger after login, logout, refresh
     def after_login(self, func):
@@ -154,20 +152,20 @@ class AuthorizationCodeFlow(object):
     @property
     def is_authenticated(self):
         # If there's an access token, we consider the user logged in
-        return hasattr(g, 'flask_auth0_tokens') and 'access_token' in g.flask_auth0_tokens
+        return self.access_token is not None
 
     @property
     def is_refreshable(self):
         # Checks whether there is a refresh token
-        return self.cache.has(self._make_key('refresh_token'))
+        return session.get(self.session_key) is not None and self.cache.has(self._make_key('refresh_token'))
 
     @property
     def access_token(self):
-        return g.flask_auth0_tokens.get('access_token')
+        return self.cache.get(self._make_key('access_token'))
 
     @property
     def token_type(self):
-        return g.flask_auth0_tokens.get('token_type')
+        return self.cache.get(self._make_key('token_type'))
 
     @property
     def authorization_header(self):
@@ -178,15 +176,15 @@ class AuthorizationCodeFlow(object):
 
     @property
     def id_token(self):
-        return g.flask_auth0_tokens.get('id_token')
+        return self.cache.get(self._make_key('id_token'))
 
     @property
     def refresh_token(self):
         return self.cache.get(self._make_key('refresh_token'))
 
-    def get_verified_claims(self, id_token=None):
+    @lru_cache(maxsize=1024)
+    def get_verified_claims(self, id_token):
         # Converts the jwt id_token into verified claims
-        id_token = self.id_token if id_token is None else id_token
         try:
             # We can get the info in the id_token, but it needs to be verified
             u_header, u_claims = jwt.get_unverified_header(id_token), jwt.get_unverified_claims(id_token)
@@ -273,10 +271,13 @@ class AuthorizationCodeFlow(object):
 
         return redirect(self.logout_url(return_to=return_to))
 
-    def login_url(self, return_to=None, prompt='login', response_type="code", redirect_uri=None):
+    def login_url(self, return_to=None, prompt='login', response_type='code', redirect_uri=None):
+
         # Returns the full url for doing a login
-        assert prompt in {'none', 'login', 'consent', 'select_account'}
-        assert response_type in {'code', 'token'}
+        if prompt not in {'none', 'login', 'consent', 'select_account'}:
+            raise ValueError('Invalid prompt')
+        if response_type not in {'code', 'token'}:
+            raise ValueError('Invalid response_type')
 
         if return_to is None:
             return_to = request.args.get('return_to') or request.referrer or '/'
@@ -296,14 +297,21 @@ class AuthorizationCodeFlow(object):
 
         return f'{self.openid_config.authorization_url}?{urlencode(query_parameters)}'
 
-    def login(self, return_to=None, prompt='login', response_type="code"):
+    def login(self, return_to=None, prompt='login', response_type='code', redirect_uri=None):
         """
         Handler for logging in a user.
         This provides a redirect to the authorization url
         :return: redirect()
         """
         self._logger.debug('login() was called')
-        return redirect(self.login_url(return_to=return_to, prompt=prompt, response_type=response_type))
+        return redirect(
+            self.login_url(
+                return_to=return_to,
+                prompt=prompt,
+                response_type=response_type,
+                redirect_uri=redirect_uri
+            )
+        )
 
     def callback(self):
         """
@@ -368,6 +376,7 @@ class AuthorizationCodeFlow(object):
                     description=f"Could not obtain access_token with code")
 
             else:
+                session[self.session_key] = uuid.uuid4()
                 self._update_tokens(**token_data)
 
             # Execute user actions
@@ -378,6 +387,7 @@ class AuthorizationCodeFlow(object):
             # Get return url from the state
             return_to = state.get('return_to')
             if return_to:
+                self._logger.debug(f'Returning to {return_to}')
                 return redirect(return_to)
 
             # Fall back on a default
@@ -427,21 +437,26 @@ class AuthorizationCodeFlow(object):
                        id_token=None,
                        expires_in=3600, **kwargs):
 
+        self._logger.debug('update_tokens() was called')
+
         if kwargs:
             self._logger.debug(f'got extra token data: {kwargs.keys()}')
 
-        # Handle the access token
-        g.flask_auth0_tokens = {
-            'token_type': token_type,
-            'access_token': access_token, }
-
         if id_token is not None:
-            g.flask_auth0_tokens['id_token'] = id_token
+            self.cache.set(
+                self._make_key('id_token'),
+                id_token,
+                timeout=expires_in)
 
         # Update the cache for the next request
         self.cache.set(
-            self._make_key('token_data'),
-            g.flask_auth0_tokens,
+            self._make_key('access_token'),
+            access_token,
+            timeout=expires_in)
+
+        self.cache.set(
+            self._make_key('token_type'),
+            token_type,
             timeout=expires_in)
 
         # Handle the refresh_token if present
@@ -455,8 +470,12 @@ class AuthorizationCodeFlow(object):
     # the token itself is cryptographically hashed, and that hash is used as the key in the backend cache
     # Is this strictly necessary to make it work? No, but it seemed like a cool thing to do :)
     def _make_key(self, value: str):
-        uid = session.get(self.session_key) or b''
+        uid = session.setdefault(self.session_key, uuid.uuid4())
         return self.hasher(value=value.encode(), uid=uid.bytes)
+
+    @property
+    def session_id(self):
+        return session.get(self.session_key)
 
     def callback_error_handler(
             self, error, error_description=None, error_uri=None, state=None):
@@ -474,7 +493,7 @@ class AuthorizationCodeFlow(object):
             'temporarily_unavailable': ServiceUnavailable,  # 503
         }
 
-        HTTPError = error_mapping.get(error, BadRequest)  # 503
+        HTTPError = error_mapping.get(error, BadRequest)  # 400
         raise HTTPError(description=error_description)
 
     def access_token_request_error_handler(

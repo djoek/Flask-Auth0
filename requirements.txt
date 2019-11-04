@@ -1,6 +1,7 @@
 requests
-flask
-werkzeug
 itsdangerous
+werkzeug
+flask
+cachelib
 pycryptodome
 python-jose[pycryptodome]

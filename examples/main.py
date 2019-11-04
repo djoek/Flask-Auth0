@@ -3,7 +3,7 @@ import os
 from flask import Flask, jsonify, render_template, request
 from flask_auth0 import AuthorizationCodeFlow
 
-from werkzeug.contrib.cache import FileSystemCache
+from cachelib import FileSystemCache
 
 app = Flask(__name__, template_folder='templates')
 app.secret_key = os.getenv('SECRET_KEY')
@@ -68,7 +68,7 @@ def web_secret():
 def user_info():
     return jsonify({
         'user_info': auth.get_user_info(),
-        'claims': auth.get_verified_claims()
+        'claims': auth.get_verified_claims(auth.id_token)
     })
 
 

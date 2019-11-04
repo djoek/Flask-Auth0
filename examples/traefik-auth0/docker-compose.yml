@@ -1,0 +1,38 @@
+version: "3"
+services:
+
+  whoami:
+    # A container that exposes an API to show its IP address
+    image: containous/whoami
+    container_name: whoami
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.middlewares.auth0.forwardauth.address=http://auth:5000/oauth2/knock"
+      - "traefik.http.middlewares.auth0.forwardauth.authResponseHeaders=X-Auth-User"
+      - "traefik.http.routers.whoami.rule=Host(`your.domain.name`)"
+      - "traefik.http.routers.whoami.middlewares=auth0@docker"
+
+  auth:
+    container_name: auth
+    image: traefik-auth0:latest
+    env_file:
+      - .env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=Host(`your.domain.name`) && PathPrefix(`/oauth2/`)"
+
+  traefik:
+    image: traefik:v2.0
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      # The HTTP port
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      # So that Traefik can listen to the Docker events
+      - /var/run/docker.sock:/var/run/docker.sock
